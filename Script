@@ -1,34 +1,267 @@
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-local Highlights = {}
+--[[ SHack ESP | White Outline + 50% Transparent Fill
+     - Highlights every non-local player
+     - Mobile + desktop draggable toggle
+     - Persists through respawns
+     - Clean state handling on toggle / join / leave
+]]
 
--- Enable ESP for a character
-local function applyESP(char)
-    if not char or Highlights[char] then return end
+----------------------------------------------------------------
+-- SERVICES
+----------------------------------------------------------------
+local Players          = game:GetService("Players")
+local TweenService     = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+
+----------------------------------------------------------------
+-- THEME
+----------------------------------------------------------------
+local Theme = {
+    Bg        = Color3.fromRGB(14, 14, 19),
+    Surface   = Color3.fromRGB(24, 24, 32),
+    Accent    = Color3.fromRGB(0, 200, 255),
+    Success   = Color3.fromRGB(0, 240, 140),
+    Danger    = Color3.fromRGB(255, 60, 90),
+    Text      = Color3.fromRGB(238, 238, 248),
+    TextDim   = Color3.fromRGB(150, 150, 172),
+}
+
+----------------------------------------------------------------
+-- ESP CORE
+----------------------------------------------------------------
+local espEnabled = false
+local highlights = {}  -- [Player] = Highlight
+
+local function buildHighlight(player)
+    local char = player.Character
+    if not char then return nil end
+    if not char:FindFirstChildOfClass("Humanoid") then return nil end
+    if not char:FindFirstChild("HumanoidRootPart") then return nil end
+
     local h = Instance.new("Highlight")
-    h.Name = "BludESP"
-    h.FillTransparency = 1
-    h.OutlineColor = Color3.fromRGB(255, 120, 0) -- orange outline
+    h.Name                = "SHack_ESP_" .. player.Name
+    h.FillColor           = Color3.fromRGB(255, 255, 255)
+    h.FillTransparency    = 0.5
+    h.OutlineColor        = Color3.fromRGB(255, 255, 255)
     h.OutlineTransparency = 0
-    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    h.Adornee = char
-    h.Parent = char
-    Highlights[char] = h
+    h.DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop
+    h.Adornee             = char
+    h.Parent              = workspace
+
+    return h
 end
 
--- Apply to existing players
-for _, plr in ipairs(Players:GetPlayers()) do
-    if plr ~= LocalPlayer then
-        applyESP(plr.Character or plr.CharacterAdded:Wait())
+local function applyToPlayer(player)
+    if not espEnabled then return end
+    if player == LocalPlayer then return end
+    if highlights[player] then
+        highlights[player]:Destroy()
+        highlights[player] = nil
+    end
+    local h = buildHighlight(player)
+    if h then highlights[player] = h end
+end
+
+local function removeFromPlayer(player)
+    local h = highlights[player]
+    if h then
+        h:Destroy()
+        highlights[player] = nil
     end
 end
 
--- Apply to players who join later
-Players.PlayerAdded:Connect(function(plr)
-    if plr ~= LocalPlayer then
-        plr.CharacterAdded:Connect(applyESP)
-        if plr.Character then applyESP(plr.Character) end
+local function enableESP()
+    espEnabled = true
+    for _, p in ipairs(Players:GetPlayers()) do
+        applyToPlayer(p)
+    end
+end
+
+local function disableESP()
+    espEnabled = false
+    for p, h in pairs(highlights) do
+        if h then h:Destroy() end
+    end
+    highlights = {}
+end
+
+----------------------------------------------------------------
+-- PLAYER / CHARACTER EVENT WIRING
+----------------------------------------------------------------
+local function hookPlayer(player)
+    if player == LocalPlayer then return end
+
+    applyToPlayer(player)
+
+    player.CharacterAdded:Connect(function(char)
+        char:WaitForChild("HumanoidRootPart", 5)
+        task.wait(0.05)
+        applyToPlayer(player)
+    end)
+
+    player.CharacterRemoving:Connect(function()
+        removeFromPlayer(player)
+    end)
+end
+
+for _, p in ipairs(Players:GetPlayers()) do hookPlayer(p) end
+
+Players.PlayerAdded:Connect(hookPlayer)
+Players.PlayerRemoving:Connect(function(p)
+    removeFromPlayer(p)
+end)
+
+----------------------------------------------------------------
+-- UI: FLOATING TOGGLE
+----------------------------------------------------------------
+local screen = Instance.new("ScreenGui")
+screen.Name = "SHackESP"
+screen.ResetOnSpawn = false
+screen.IgnoreGuiInset = true
+screen.DisplayOrder = 999
+screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screen.Parent = PlayerGui
+
+local btn = Instance.new("TextButton")
+btn.Name = "ESPToggle"
+btn.Size = UDim2.fromOffset(150, 52)
+btn.Position = UDim2.new(0.5, -75, 0, 90)
+btn.BackgroundColor3 = Theme.Bg
+btn.BorderSizePixel = 0
+btn.AutoButtonColor = false
+btn.Text = ""
+btn.Parent = screen
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 12)
+btnCorner.Parent = btn
+
+local btnStroke = Instance.new("UIStroke")
+btnStroke.Color = Theme.Danger
+btnStroke.Thickness = 2
+btnStroke.Transparency = 0.15
+btnStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+btnStroke.Parent = btn
+
+local btnGradient = Instance.new("UIGradient")
+btnGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Theme.Danger),
+    ColorSequenceKeypoint.new(1, Theme.Accent),
+})
+btnGradient.Parent = btnStroke
+
+local btnScale = Instance.new("UIScale")
+btnScale.Scale = 1
+btnScale.Parent = btn
+
+local label = Instance.new("TextLabel")
+label.BackgroundTransparency = 1
+label.Size = UDim2.fromScale(1, 1)
+label.Font = Enum.Font.GothamBold
+label.Text = "ESP:OFF"
+label.TextColor3 = Theme.Text
+label.TextSize = 16
+label.Parent = btn
+
+local pulseConn
+
+local function updateVisualState()
+    if espEnabled then
+        TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {BackgroundColor3 = Theme.Surface}):Play()
+        TweenService:Create(btnStroke, TweenInfo.new(0.2), {Color = Theme.Success, Transparency = 0}):Play()
+        TweenService:Create(label, TweenInfo.new(0.2), {TextColor3 = Theme.Success}):Play()
+        if pulseConn then pulseConn:Disconnect() end
+        local base = 1
+        pulseConn = game:GetService("RunService").RenderStepped:Connect(function()
+            local t = tick()
+            local v = base + math.sin(t * 3) * 0.015
+            btnScale.Scale = v
+        end)
+    else
+        if pulseConn then pulseConn:Disconnect() pulseConn = nil end
+        TweenService:Create(btnScale, TweenInfo.new(0.2), {Scale = 1}):Play()
+        TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Theme.Bg}):Play()
+        TweenService:Create(btnStroke, TweenInfo.new(0.2), {Color = Theme.Danger, Transparency = 0.15}):Play()
+        TweenService:Create(label, TweenInfo.new(0.2), {TextColor3 = Theme.Text}):Play()
+    end
+end
+
+----------------------------------------------------------------
+-- DRAG (mobile + desktop, threshold-safe)
+----------------------------------------------------------------
+local dragging, dragMoved = false, false
+local dragStart, startPos
+
+btn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragMoved = false
+        dragStart = input.Position
+        startPos  = btn.Position
     end
 end)
 
-print("Universal ESP loaded")
+UserInputService.InputChanged:Connect(function(input)
+    if not dragging then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+    and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+    local delta = input.Position - dragStart
+    if delta.Magnitude > 6 then dragMoved = true end
+
+    if dragMoved then
+        btn.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+----------------------------------------------------------------
+-- TOGGLE LOGIC
+----------------------------------------------------------------
+local function pressFeedback()
+    TweenService:Create(btnScale, TweenInfo.new(0.08, Enum.EasingStyle.Quad), {Scale = 0.95}):Play()
+    task.wait(0.08)
+    TweenService:Create(btnScale, TweenInfo.new(0.14, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = espEnabled and 1 or 1}):Play()
+end
+
+btn.MouseButton1Click:Connect(function()
+    if dragMoved then
+        dragMoved = false
+        return
+    end
+
+    if espEnabled then
+        disableESP()
+        label.Text = "ESP:OFF"
+        updateVisualState()
+    else
+        enableESP()
+        label.Text = "ESP:ON"
+        updateVisualState()
+    end
+end)
+
+btn.MouseButton1Down:Connect(function()
+    if dragMoved then return end
+    TweenService:Create(btnScale, TweenInfo.new(0.08), {Scale = 0.94}):Play()
+end)
+
+btn.MouseButton1Up:Connect(function()
+    if dragMoved then return end
+    TweenService:Create(btnScale, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+end)
+
+-- Initial visuals
+updateVisualState()
